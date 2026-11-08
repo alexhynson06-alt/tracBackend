@@ -116,7 +116,6 @@ export const sendStatusEmail = async (request, newStatus, reason = null) => {
       documentType: request.request_type,
       dateSubmitted: request.date_sent,
       amount: await calculateAmount(request),
-      estimatedCompletion: request.estimated_completion_date,
       rejectionReason: reason,
       rejectedDate: new Date()
     };

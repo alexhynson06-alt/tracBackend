@@ -11,14 +11,10 @@ import {
   isStrongPassword,
   VERIFICATION_CODE_TTL_MS
 } from '../utils/emailVerification.js';
+import { validateStudentIdNumber } from '../utils/studentId.js';
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 const escapeIlikePattern = (value) => value.replace(/[\\%_]/g, '\\$&');
-const normalizeIdNumber = (idNumber) => {
-  const digits = String(idNumber || '').replace(/\D/g, '');
-  return digits.length === 7 ? `${digits.slice(0, 2)}-${digits.slice(2)}` : '';
-};
-
 const findPendingSignupByEmail = (email) => supabase
   .from('pending_signups')
   .select('*')
@@ -168,7 +164,7 @@ export const signup = async (req, res) => {
     } = req.body;
 
     const normalizedEmail = normalizeEmail(email);
-    const normalizedIdNumber = normalizeIdNumber(id_number);
+    const normalizedIdNumber = validateStudentIdNumber(id_number);
 
     if (!normalizedEmail) {
       return res.status(400).json({ message: 'Email is required' });
@@ -188,7 +184,7 @@ export const signup = async (req, res) => {
     }
 
     if (!normalizedIdNumber || !first_name?.trim() || !last_name?.trim()) {
-      return res.status(400).json({ message: 'A valid ID number, first name, and last name are required.' });
+      return res.status(400).json({ message: 'A valid 9-digit ID number, first name, and last name are required.' });
     }
 
     if (!['student', 'alumni'].includes(role)) {
@@ -446,7 +442,7 @@ export const resendVerificationCode = async (req, res) => {
 // =============================================
 export const login = async (req, res) => {
   try {
-    const idNumber = normalizeIdNumber(req.body.id_number);
+    const idNumber = validateStudentIdNumber(req.body.id_number);
     const { password } = req.body;
 
     if (!idNumber || !password) {

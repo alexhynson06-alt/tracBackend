@@ -1,7 +1,7 @@
 // backend/src/routes/adminUsersRoutes.js
 
 import express from 'express';
-import { authenticateToken, requireAdmin } from '../middleware/auth.middleware.js';
+import { authenticateToken, authorizeRoles, requireAdmin } from '../middleware/auth.middleware.js';
 import {
   getAllAdminUsers,
   addAdminUser,
@@ -15,6 +15,7 @@ const router = express.Router();
 // All routes require authentication and admin privileges
 router.use(authenticateToken);
 router.use(requireAdmin);
+router.use(authorizeRoles('super_admin'));
 
 // ✅ UPDATED: removed "/admin-users" prefix (base is /api/admin)
 // Now endpoints are:

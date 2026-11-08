@@ -4,12 +4,11 @@ import { supabase } from '../config/supabase.js';
 const getSystemSettings = async () => {
   const { data: settings } = await supabase
     .from('system_settings')
-    .select('daily_queue_limit, avg_processing_time, office_hours')
+    .select('daily_queue_limit, office_hours')
     .single();
 
   return {
     dailyLimit: settings?.daily_queue_limit || 100,
-    avgProcessingTime: settings?.avg_processing_time || 10,
     officeHours: settings?.office_hours || 'Monday to Friday, 8:00 AM - 4:45 PM'
   };
 };
@@ -25,7 +24,7 @@ const getPHDate = () => {
 export const getQueueStatus = async (req, res) => {
   try {
     const today = getPHDate();
-    const { dailyLimit, avgProcessingTime } = await getSystemSettings();
+    const { dailyLimit } = await getSystemSettings();
     
     // Get current serving
     const { data: currentServing, error: servingError } = await supabase
@@ -74,7 +73,6 @@ export const getQueueStatus = async (req, res) => {
       pending_count: pendingCount || 0,
       total_requests_today: totalToday || 0,
       queue_limit: dailyLimit,
-      avg_processing_time: avgProcessingTime,
       is_limit_reached: (totalToday || 0) >= dailyLimit,
       last_updated: new Date().toISOString()
     };

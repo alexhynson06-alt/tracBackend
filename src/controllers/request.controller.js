@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js';
+import { removeDuplicateReceiptStatusEvents } from '../utils/requestTimeline.js';
 import { studentAppUrl } from '../config/email.js';
-import { normalizeCatalog } from '../utils/documentCatalog.js';
+import { isRequestCatalogItemAvailable, isRoleAllowed, normalizeCatalog } from '../utils/documentCatalog.js';
 import { renderEmailHeader } from '../utils/emailLayout.js';
 
 // =============================================
@@ -33,26 +34,15 @@ const getFeeForDocument = async (requestType) => {
   return Number(requestRule?.fee || 0);
 };
 
+const formatAdminDisplayName = (admin) => {
+  if (!admin) return 'Awaiting administrator processing';
+  if (admin.full_name && admin.username) return `${admin.full_name} (@${admin.username})`;
+  return admin.full_name || (admin.username ? `@${admin.username}` : 'Awaiting administrator processing');
+};
+
 const getPHDate = () => new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit'
 }).format(new Date());
-
-const addWorkingDays = (workingDays) => {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
-  }).formatToParts(new Date()).reduce((values, part) => {
-    if (part.type !== 'literal') values[part.type] = Number(part.value);
-    return values;
-  }, {});
-  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  let added = 0;
-  while (added < workingDays) {
-    date.setUTCDate(date.getUTCDate() + 1);
-    if (date.getUTCDay() !== 0 && date.getUTCDay() !== 6) added += 1;
-  }
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), parts.hour - 8, parts.minute, parts.second));
-};
 
 const getNextAvailableDate = () => {
   const tomorrow = new Date();
@@ -129,7 +119,6 @@ const sendConfirmationEmail = async (email, name, requestData) => {
           <p><strong>🔢 Queue Number:</strong> #${requestData.queue_number}</p>
           <p><strong>📄 Copies:</strong> ${requestData.copies}</p>
           <p><strong>💰 Total Fee:</strong> ₱${requestData.totalFee}</p>
-          <p><strong>⏱️ Estimated Completion:</strong> ${requestData.estimated_completion}</p>
         </div>
         <p>You will receive another email when your document is ready for pickup.</p>
         <p><a href="${studentAppUrl}" style="color: #1B5E20; font-weight: bold;">Track your request in TRAC Request</a></p>
@@ -202,7 +191,7 @@ export const createRequest = async (req, res) => {
     }
 
     const { documentSettings, maxCopiesPerRequest, requirePurpose } = await getSystemSettings();
-    const requestRule = documentSettings.find((item) => item.name === request_type && item.active);
+    const requestRule = documentSettings.find((item) => item.name === request_type && isRequestCatalogItemAvailable(item));
     if (!requestRule) {
       return res.status(400).json({
         success: false,
@@ -220,7 +209,7 @@ export const createRequest = async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    if (!requestRule.allowedRoles.includes(user.role)) {
+    if (!isRoleAllowed(requestRule.allowedRoles, user.role)) {
       return res.status(403).json({
         success: false,
         message: `${request_type} is not available to ${user.role === 'alumni' ? 'alumni' : 'students'}.`
@@ -256,15 +245,13 @@ export const createRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Purpose is required.' });
     }
 
-    const processingDays = Number(requestRule.processing_days);
     const unitFee = Number(requestRule.fee);
-    if (!Number.isInteger(processingDays) || processingDays < 1 || !Number.isFinite(unitFee) || unitFee < 0 || Math.abs(unitFee - Number(unitFee.toFixed(2))) > 0.00000001 || !['per_copy', 'per_page', 'per_subject'].includes(requestRule.feeUnit)) {
-      return res.status(409).json({ success: false, message: 'This catalog entry needs valid processing days and a valid fee.' });
+    if (!Number.isFinite(unitFee) || unitFee < 0 || Math.abs(unitFee - Number(unitFee.toFixed(2))) > 0.00000001 || !['per_copy', 'per_page', 'per_subject'].includes(requestRule.feeUnit)) {
+      return res.status(409).json({ success: false, message: 'This catalog entry needs a valid fee.' });
     }
 
     const tracking_code = generateTrackingCode();
     const today = getPHDate();
-    const estimatedCompletion = addWorkingDays(processingDays);
     const totalFee = Number((unitFee * copyCount).toFixed(2));
     const submittedAt = new Date().toISOString();
     const requestPayload = {
@@ -278,13 +265,11 @@ export const createRequest = async (req, res) => {
       copies: copyCount,
       tracking_code,
       status: 'pending',
-      estimated_completion_date: estimatedCompletion.toISOString(),
       queue_date: today,
       date_sent: submittedAt,
       fee_amount: unitFee,
       fee_unit: requestRule.feeUnit,
-      fee_total: totalFee,
-      processing_days_snapshot: processingDays
+      fee_total: totalFee
     };
 
     const { data, error } = await supabase.rpc('submit_catalog_request', { p_request: requestPayload });
@@ -330,10 +315,7 @@ export const createRequest = async (req, res) => {
       tracking_code,
       queue_number: queueNumber,
       copies,
-      totalFee: totalFee.toFixed(2),
-      estimated_completion: estimatedCompletion.toLocaleDateString('en-US', {
-        year: 'numeric', month: 'long', day: 'numeric'
-      })
+      totalFee: totalFee.toFixed(2)
     });
 
     res.status(201).json({
@@ -348,13 +330,6 @@ export const createRequest = async (req, res) => {
       fee_amount: unitFee,
       fee_unit: requestRule.feeUnit,
       fee_total: totalFee,
-      processing_days: processingDays,
-      estimated_completion: {
-        iso: estimatedCompletion.toISOString(),
-        formatted: estimatedCompletion.toLocaleDateString('en-US', {
-          year: 'numeric', month: 'long', day: 'numeric'
-        })
-      },
       queue_number: queueNumber,
       message: 'Request submitted successfully'
     });
@@ -375,11 +350,18 @@ export const trackRequestByCode = async (req, res) => {
 
     const { data, error } = await supabase
       .from('requests')
-      .select('tracking_code, status, request_type, category, date_sent, copies, purpose, additional_remarks, queue_number, estimated_completion_date')
+      .select('sender_id, tracking_code, status, request_type, category, date_sent, copies, purpose, additional_remarks, queue_number')
       .eq('tracking_code', tracking_code)
       .single();
 
     if (error || !data) {
+      return res.status(404).json({ message: 'Request not found' });
+    }
+
+    const userRole = String(req.user?.role || '').toLowerCase();
+    const userType = String(req.user?.type || '').toLowerCase();
+    const isAdmin = userRole.includes('admin') || userType === 'admin';
+    if (!isAdmin && data.sender_id !== req.user?.userId) {
       return res.status(404).json({ message: 'Request not found' });
     }
 
@@ -392,7 +374,6 @@ export const trackRequestByCode = async (req, res) => {
       copies: data.copies,
       purpose: data.purpose,
       additional_remarks: data.additional_remarks,
-      estimated_completion: data.estimated_completion_date,
       queue_number: data.queue_number
     });
 
@@ -455,9 +436,11 @@ export const getAllRequests = async (req, res) => {
       return `${year}-${month}-${day}`;
     };
 
+    const { documentSettings } = await getSystemSettings();
     const transformedRequests = requests.map(request => {
       const userData = usersMap[request.sender_id] || {};
       const studentType = userData.role === 'alumni' ? 'Alumni' : 'Student';
+      const requestRule = documentSettings.find((item) => item.name === request.request_type);
       
       return {
         id: request.tracking_code || `REQ-${request.id}`,
@@ -466,6 +449,8 @@ export const getAllRequests = async (req, res) => {
         idNumber: request.sender_id_number || userData.id_number || '—',
         studentType: studentType,
         document: request.request_type,
+        allowedRoles: requestRule?.allowedRoles || [],
+        requestAvailable: requestRule?.active === true,
         date: request.date_sent,
         status: request.status,
         copies: request.copies,
@@ -542,6 +527,8 @@ export const getRequestById = async (req, res) => {
     };
 
     const studentType = userData?.role === 'student' ? 'Student' : userData?.role === 'alumni' ? 'Alumni' : 'Student';
+    const { documentSettings } = await getSystemSettings();
+    const requestRule = documentSettings.find((item) => item.name === request.request_type);
     const copyCount = Number(request.copies || 1);
     const amount = request.fee_total !== null && request.fee_total !== undefined
       ? Number(request.fee_total)
@@ -552,6 +539,8 @@ export const getRequestById = async (req, res) => {
     const response = {
       id: request.tracking_code, uuid: request.id, tracking_code: request.tracking_code,
       status: request.status, category: request.category, documentType: request.request_type,
+      allowedRoles: requestRule?.allowedRoles || [],
+      requestAvailable: requestRule?.active === true,
       purpose: request.purpose, copies: request.copies,
       studentName: request.sender_name || (userData ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : ''),
       ...(isAdmin ? { studentPhoto: userData?.avatar_url || null } : {}),
@@ -636,15 +625,18 @@ export const searchRequests = async (req, res) => {
       return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
     };
 
+    const { documentSettings } = await getSystemSettings();
     const transformedRequests = uniqueRequests.map(request => {
       const user = userMap[request.sender_id] || {};
+      const requestRule = documentSettings.find((item) => item.name === request.request_type);
       return {
         id: request.tracking_code || `REQ-${request.id}`,
         student: request.sender_name || (user.first_name || user.last_name ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Unknown'),
         studentPhoto: user.avatar_url || null,
         idNumber: request.sender_id_number || user.id_number || '—',
         studentType: user.role === 'alumni' ? 'Alumni' : 'Student',
-        document: request.request_type, date: formatDateShort(request.date_sent),
+        document: request.request_type, allowedRoles: requestRule?.allowedRoles || [],
+        requestAvailable: requestRule?.active === true, date: formatDateShort(request.date_sent),
         status: request.status, purpose: request.purpose, copies: request.copies || 1,
         institute: user.department || request.department || '', course: user.course || '',
         queue_number: request.queue_number, queue_date: request.queue_date
@@ -732,7 +724,7 @@ export const getUserRequestDetails = async (req, res) => {
 
     const { data: request, error } = await supabase
       .from('requests')
-      .select('tracking_code, request_type, status, date_sent, copies, estimated_completion_date, processed_date, ready_date, claimed_date, rejected_date, rejected_reason, queue_number, queue_date, or_number, or_image_url, or_uploaded_at, or_reviewed_at, or_confirmed_at, or_rejection_reason, fee_amount, fee_unit, fee_total, processing_days_snapshot')
+      .select('tracking_code, request_type, status, date_sent, copies, processed_date, ready_date, claimed_date, rejected_date, rejected_reason, queue_number, queue_date, or_number, or_image_url, or_uploaded_at, or_reviewed_at, or_confirmed_at, or_rejection_reason, fee_amount, fee_unit, fee_total')
       .eq('tracking_code', trackingCode).eq('sender_id', userId).single();
 
     if (error || !request) { return res.status(404).json({ message: 'Request not found' }); }
@@ -745,9 +737,8 @@ export const getUserRequestDetails = async (req, res) => {
     res.status(200).json({
       tracking_code: request.tracking_code, request_type: request.request_type,
       status: request.status, date_sent: formatDateLong(request.date_sent),
-      copies: request.copies, estimated_completion_date: formatDateLong(request.estimated_completion_date),
+      copies: request.copies,
       fee_amount: request.fee_amount, fee_unit: request.fee_unit, fee_total: request.fee_total,
-      processing_days_snapshot: request.processing_days_snapshot,
       processed_date: formatDateLong(request.processed_date), ready_date: formatDateLong(request.ready_date),
       claimed_date: formatDateLong(request.claimed_date), rejected_date: formatDateLong(request.rejected_date),
       rejected_reason: request.rejected_reason || null, queue_number: request.queue_number, queue_date: request.queue_date
@@ -759,6 +750,90 @@ export const getUserRequestDetails = async (req, res) => {
   } catch (err) {
     console.error('Get user request details error:', err);
     res.status(500).json({ error: err.message });
+  }
+};
+
+export const getUserRequestTimeline = async (req, res) => {
+  try {
+    const { trackingCode } = req.params;
+    const { userId } = req.user;
+
+    const { data: request, error: requestError } = await supabase
+      .from('requests')
+      .select('id, sender_id')
+      .eq('tracking_code', trackingCode)
+      .eq('sender_id', userId)
+      .single();
+
+    if (requestError || !request) {
+      return res.status(404).json({ message: 'Request not found' });
+    }
+
+    const [requestResult, orResult] = await Promise.all([
+      supabase
+        .from('requests')
+        .select('status_history')
+        .eq('id', request.id)
+        .single(),
+      supabase
+        .from('request_or_submissions')
+        .select('id, attempt_number, submitted_at, reviewed_at, decision, rejection_reason, submitted_by, reviewed_by')
+        .eq('request_id', request.id)
+        .order('attempt_number', { ascending: true })
+    ]);
+
+    if (requestResult.error) throw requestResult.error;
+    if (orResult.error) throw orResult.error;
+
+    const statusHistory = removeDuplicateReceiptStatusEvents(
+      Array.isArray(requestResult.data?.status_history) ? requestResult.data.status_history : [],
+      orResult.data || []
+    );
+    const adminIds = new Set();
+    statusHistory.forEach((entry) => {
+      if (entry?.admin_id) adminIds.add(entry.admin_id);
+    });
+    (orResult.data || []).forEach((entry) => {
+      if (entry?.reviewed_by) adminIds.add(entry.reviewed_by);
+    });
+
+    const { data: admins } = adminIds.size
+      ? await supabase.from('admins').select('id, username, full_name').in('id', Array.from(adminIds))
+      : { data: [] };
+    const adminMap = Object.fromEntries((admins || []).map((admin) => [admin.id, admin]));
+
+    const timeline = [
+      ...statusHistory.map((entry) => ({
+        type: 'status',
+        status: entry.status,
+        timestamp: entry.timestamp,
+        reason: entry.reason || null,
+        administrator: entry.admin_id ? formatAdminDisplayName(adminMap[entry.admin_id]) : null
+      })),
+      ...(orResult.data || []).flatMap((entry) => ([
+        {
+          type: 'or_submitted',
+          timestamp: entry.submitted_at,
+          attempt_number: entry.attempt_number,
+          administrator: null,
+          decision: null,
+          reason: null
+        },
+        entry.reviewed_at ? {
+          type: entry.decision === 'confirmed' ? 'or_confirmed' : 'or_rejected',
+          timestamp: entry.reviewed_at,
+          attempt_number: entry.attempt_number,
+          administrator: formatAdminDisplayName(adminMap[entry.reviewed_by]),
+          decision: entry.decision,
+          reason: entry.rejection_reason || null
+        } : null
+      ].filter(Boolean)))
+    ].sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp));
+
+    res.status(200).json({ timeline });
+  } catch (error) {
+    console.error('Get user request timeline error:', error);
+    res.status(500).json({ message: 'Failed to load request timeline.' });
   }
 };
 

@@ -1,178 +1,5 @@
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { supabase } from '../config/supabase.js';
 import { storageService } from '../services/cloudinaryService.js';
-
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = '8h';
-
-export const adminLogin = async (req, res) => {
-  try {
-    console.log('📥 Login request received. Body:', req.body);
-
-    const { username, password } = req.body;
-
-    if (!username || !password) {
-      console.log('❌ Missing username or password');
-      return res.status(400).json({ 
-        message: 'Username and password are required' 
-      });
-    }
-
-    console.log(`🔍 Looking for admin with username: "${username}"`);
-
-    const { data: admin, error } = await supabase
-      .from('admins')
-      .select('*')
-      .eq('username', username)
-      .single();
-
-    if (error) {
-      console.log('❌ Supabase error:', error);
-    }
-
-    if (!admin) {
-      console.log('❌ Admin not found for username:', username);
-      return res.status(401).json({ message: 'Invalid username or password' });
-    }
-
-    console.log('✅ Admin found:', { id: admin.id, username: admin.username, is_active: admin.is_active });
-    console.log('📦 Stored hash (first 20 chars):', admin.password_hash?.substring(0, 20));
-
-    if (!admin.is_active) {
-      console.log('❌ Account is deactivated');
-      return res.status(401).json({ 
-        message: 'Account is deactivated. Please contact the system administrator.' 
-      });
-    }
-
-    console.log('🔐 Comparing password...');
-    const isValidPassword = await bcrypt.compare(password, admin.password_hash);
-    console.log('🔐 Password match result:', isValidPassword);
-
-    if (!isValidPassword) {
-      console.log('❌ Password mismatch');
-      return res.status(401).json({ message: 'Invalid username or password' });
-    }
-
-    // Update last login
-    await supabase
-      .from('admins')
-      .update({ last_login: new Date().toISOString() })
-      .eq('id', admin.id);
-
-    const token = jwt.sign(
-      { 
-        userId: admin.id,
-        role: admin.role,
-        department: admin.department || 'CCS',
-        type: 'admin',
-        username: admin.username
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
-    );
-
-    const { password_hash, ...adminData } = admin;
-
-    console.log('✅ Login successful:', { username: admin.username, role: admin.role });
-
-    res.status(200).json({
-      message: 'Login successful',
-      token,
-      admin: adminData,
-      user: {
-        id: admin.id,
-        username: admin.username,
-        role: admin.role,
-        department: admin.department,
-        name: admin.full_name
-      }
-    });
-
-  } catch (err) {
-    console.error('🔥 Admin login error:', err);
-    res.status(500).json({ 
-      message: 'Login failed. Please try again.' 
-    });
-  }
-};
-
-export const adminRegister = async (req, res) => {
-  try {
-    const { 
-      username, 
-      password, 
-      email, 
-      full_name, 
-      role = 'admin',
-      department 
-    } = req.body;
-
-    if (req.user.role !== 'super_admin') {
-      return res.status(403).json({ 
-        message: 'Only super admins can create new admins' 
-      });
-    }
-
-    if (!username || !password) {
-      return res.status(400).json({ 
-        message: 'Username and password are required' 
-      });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({ 
-        message: 'Password must be at least 6 characters' 
-      });
-    }
-
-    const { data: existingAdmin } = await supabase
-      .from('admins')
-      .select('username')
-      .eq('username', username)
-      .single();
-
-    if (existingAdmin) {
-      return res.status(409).json({ 
-        message: 'Username already exists' 
-      });
-    }
-
-    const salt = await bcrypt.genSalt(10);
-    const password_hash = await bcrypt.hash(password, salt);
-
-    const { data: admin, error } = await supabase
-      .from('admins')
-      .insert([{
-        username,
-        password_hash,
-        email,
-        full_name,
-        role,
-        department,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }])
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    const { password_hash: _, ...adminData } = admin;
-
-    res.status(201).json({
-      message: 'Admin created successfully',
-      admin: adminData
-    });
-
-  } catch (err) {
-    console.error('Admin registration error:', err);
-    res.status(500).json({ 
-      message: 'Registration failed. Please try again.' 
-    });
-  }
-};
 
 export const getCurrentAdmin = async (req, res) => {
   try {
@@ -203,7 +30,9 @@ export const updateCurrentAdmin = async (req, res) => {
     const { email, full_name } = req.body;
     const updates = {};
 
-    if (email !== undefined) updates.email = email;
+    if (email !== undefined) {
+      return res.status(400).json({ message: 'Change the email through Supabase Auth account settings' });
+    }
     if (full_name !== undefined) updates.full_name = full_name;
 
     if (Object.keys(updates).length === 0) {
@@ -314,67 +143,6 @@ export const deleteAdminAvatar = async (req, res) => {
   }
 };
 
-export const changePassword = async (req, res) => {
-  try {
-    const { current_password, new_password } = req.body;
-    const adminId = req.user.userId;
-
-    if (!current_password || !new_password) {
-      return res.status(400).json({ 
-        message: 'Current password and new password are required' 
-      });
-    }
-
-    if (new_password.length < 6) {
-      return res.status(400).json({ 
-        message: 'New password must be at least 6 characters' 
-      });
-    }
-
-    const { data: admin, error } = await supabase
-      .from('admins')
-      .select('*')
-      .eq('id', adminId)
-      .single();
-
-    if (error || !admin) {
-      return res.status(404).json({ 
-        message: 'Admin not found' 
-      });
-    }
-
-    const isValidPassword = await bcrypt.compare(current_password, admin.password_hash);
-    
-    if (!isValidPassword) {
-      return res.status(401).json({ 
-        message: 'Current password is incorrect' 
-      });
-    }
-
-    const salt = await bcrypt.genSalt(10);
-    const password_hash = await bcrypt.hash(new_password, salt);
-    const { error: updateError } = await supabase
-      .from('admins')
-      .update({ 
-        password_hash,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', adminId);
-
-    if (updateError) throw updateError;
-
-    res.status(200).json({ 
-      message: 'Password changed successfully' 
-    });
-
-  } catch (err) {
-    console.error('Change password error:', err);
-    res.status(500).json({ 
-      message: 'Failed to change password' 
-    });
-  }
-};
-
 export const getAllAdmins = async (req, res) => {
   try {
     if (req.user.role !== 'super_admin') {
@@ -411,10 +179,38 @@ export const updateAdminStatus = async (req, res) => {
       });
     }
 
+    if (role !== undefined && !['super_admin', 'admin', 'staff'].includes(role)) {
+      return res.status(400).json({ message: 'Invalid admin role' });
+    }
+
+    const { data: currentAdmin, error: currentAdminError } = await supabase
+      .from('admins')
+      .select('role, is_active')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (currentAdminError) throw currentAdminError;
+    if (!currentAdmin) return res.status(404).json({ message: 'Admin not found' });
+
     if (id === req.user.userId && is_active === false) {
       return res.status(400).json({ 
         message: 'You cannot deactivate your own account' 
       });
+    }
+
+    const nextRole = role ?? currentAdmin.role;
+    const nextIsActive = is_active ?? currentAdmin.is_active;
+    if (currentAdmin.role === 'super_admin' && (!nextIsActive || nextRole !== 'super_admin')) {
+      const { count, error: countError } = await supabase
+        .from('admins')
+        .select('id', { count: 'exact', head: true })
+        .eq('role', 'super_admin')
+        .eq('is_active', true);
+
+      if (countError) throw countError;
+      if (count <= 1) {
+        return res.status(409).json({ message: 'The final active SuperAdmin cannot be deactivated or demoted' });
+      }
     }
 
     const updates = {
@@ -431,6 +227,13 @@ export const updateAdminStatus = async (req, res) => {
       .single();
 
     if (error) throw error;
+
+    if (is_active !== undefined) {
+      const { error: authError } = await supabase.auth.admin.updateUserById(id, {
+        ban_duration: is_active ? 'none' : '876000h'
+      });
+      if (authError) throw authError;
+    }
 
     res.status(200).json({
       message: 'Admin updated successfully',

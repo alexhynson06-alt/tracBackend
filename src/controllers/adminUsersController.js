@@ -1,19 +1,7 @@
 // backend/src/controllers/adminUsersController.js
 
 import { supabase } from '../config/supabase.js';
-import { hashPassword } from '../utils/hash.js';
-import { adminAppUrl, sendEmail } from '../config/email.js';
-import { renderEmailHeader } from '../utils/emailLayout.js';
-
-// Helper: Generate random password
-const generateTempPassword = () => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$';
-  let password = '';
-  for (let i = 0; i < 10; i++) {
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return password;
-};
+import { adminAppUrl } from '../config/email.js';
 
 // Helper: Generate username from email
 const generateUsername = (email) => {
@@ -62,9 +50,10 @@ export const getAllAdminUsers = async (req, res) => {
 // =============================================
 export const addAdminUser = async (req, res) => {
   try {
-    let { name, email, phone, role = 'staff', department = 'CCS' } = req.body;
+    const { name, role = 'staff', department = 'CCS' } = req.body;
+    const email = req.body.email?.trim().toLowerCase();
 
-    if (!name || !email) {
+    if (typeof name !== 'string' || !name.trim() || !email) {
       return res.status(400).json({ message: 'Name and email are required' });
     }
 
@@ -73,68 +62,55 @@ export const addAdminUser = async (req, res) => {
       return res.status(400).json({ message: 'Invalid department selected' });
     }
 
-    // Check if user already exists
-    const { data: existing, error: checkError } = await supabase
+    if (!['admin', 'staff'].includes(role)) {
+      return res.status(400).json({ message: 'Only staff and admin roles can be invited' });
+    }
+
+    const { data: existing } = await supabase
       .from('admins')
       .select('id')
       .eq('email', email)
-      .single();
+      .maybeSingle();
 
     if (existing) {
       return res.status(400).json({ message: 'User with this email already exists' });
     }
 
-    // Generate username and temporary password
-    const username = generateUsername(email);
-    const tempPassword = generateTempPassword();
-    const password_hash = await hashPassword(tempPassword);
+    const { data: invitation, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email, {
+      redirectTo: `${adminAppUrl}/login?flow=invite`
+    });
 
-    // If department is 'ALL', automatically set role to 'super_admin'
-    const finalRole = department === 'ALL' ? 'super_admin' : role;
+    if (inviteError) {
+      if (inviteError.code === 'email_exists' || inviteError.status === 422) {
+        return res.status(409).json({ message: 'An account with this email already exists' });
+      }
+      throw inviteError;
+    }
 
+    const userId = invitation.user.id;
+    const username = `${generateUsername(email) || 'admin'}-${userId.slice(0, 6)}`;
     const { data: newUser, error } = await supabase
       .from('admins')
-      .insert([{
+      .insert({
+        id: userId,
         username,
         email,
-        full_name: name,
-        role: finalRole,
-        department: department,
-        password_hash,
-        is_active: true,
-        created_at: new Date().toISOString()
-      }])
+        full_name: name.trim(),
+        role,
+        department,
+        is_active: true
+      })
       .select('id, username, email, full_name, role, department, is_active, created_at')
       .single();
 
-    if (error) throw error;
-
-    // Send invitation email with CORRECT login link
-    const departmentDisplay = department === 'ALL' ? 'All Departments (Registrar)' : department;
-    const subject = 'Your TRAC Request admin account';
-    const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; background: #f1f8e9; padding: 24px; border: 1px solid #c8e6c9; border-radius: 12px;">
-        ${renderEmailHeader()}
-        <h2 style="color: #1B5E20;">Welcome to TRAC Request Admin</h2>
-        <p>Dear ${name},</p>
-        <p>Your admin account has been created. You can now login using:</p>
-        <div style="background: #fff; padding: 15px; border-left: 4px solid #F9A825; border-radius: 8px; margin: 15px 0;">
-          <p><strong>Username:</strong> ${username}</p>
-          <p><strong>Email:</strong> ${email}</p>
-          <p><strong>Temporary Password:</strong> ${tempPassword}</p>
-     
-        </div>
-        <p>Please change your password after first login.</p>
-        <a href="${adminAppUrl}/login" style="display: inline-block; background: #1B5E20; color: white; padding: 10px 20px; text-decoration: none; border-radius: 8px; margin-top: 10px;">Go to Admin Login</a>
-        <p style="margin-top: 20px; font-size: 12px; color: #666;">This is an automated message, please do not reply.</p>
-      </div>
-    `;
-    
-    await sendEmail(email, subject, html).catch(err => console.log('Email error:', err));
+    if (error) {
+      await supabase.auth.admin.deleteUser(userId).catch(() => {});
+      throw error;
+    }
 
     res.status(201).json({
       success: true,
-      message: 'Admin user added successfully',
+      message: 'Admin invitation sent successfully',
       user: {
         id: newUser.id,
         name: newUser.full_name,
@@ -160,14 +136,65 @@ export const updateAdminUser = async (req, res) => {
     const { id } = req.params;
     const { name, email, status, role, department } = req.body;
 
+    const { data: existingUser, error: lookupError } = await supabase
+      .from('admins')
+      .select('id, email, role, is_active')
+      .eq('id', id)
+      .single();
+
+    if (lookupError || !existingUser) {
+      return res.status(404).json({ message: 'Admin user not found' });
+    }
+
+    if (email && email.trim().toLowerCase() !== existingUser.email.toLowerCase()) {
+      return res.status(400).json({ message: 'Change the email through Supabase Auth account settings' });
+    }
+
+    if (role !== undefined && !['admin', 'staff', 'super_admin'].includes(role)) {
+      return res.status(400).json({ message: 'Invalid admin role' });
+    }
+
+    if (status !== undefined && !['active', 'inactive'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid admin status' });
+    }
+
+    if (department !== undefined && !VALID_DEPARTMENTS.includes(department)) {
+      return res.status(400).json({ message: 'Invalid department selected' });
+    }
+
+    const isActive = status === undefined ? existingUser.is_active : status === 'active';
+    const nextRole = role ?? existingUser.role;
+    const removingSuperAdminAccess = existingUser.role === 'super_admin' && (!isActive || nextRole !== 'super_admin');
+
+    if (removingSuperAdminAccess) {
+      const { count, error: countError } = await supabase
+        .from('admins')
+        .select('id', { count: 'exact', head: true })
+        .eq('role', 'super_admin')
+        .eq('is_active', true);
+
+      if (countError) throw countError;
+      if (count <= 1) {
+        return res.status(409).json({ message: 'The final active SuperAdmin cannot be deactivated or demoted' });
+      }
+    }
+
+    if (!isActive && id === req.user.userId) {
+      return res.status(400).json({ message: 'You cannot deactivate your own account' });
+    }
+
     const updateData = {};
     if (name !== undefined) updateData.full_name = name;
-    if (email !== undefined) updateData.email = email;
     if (role !== undefined) updateData.role = role;
-    if (department !== undefined && VALID_DEPARTMENTS.includes(department)) updateData.department = department;
-    if (status !== undefined) updateData.is_active = status === 'active';
+    if (department !== undefined) updateData.department = department;
+    if (status !== undefined) updateData.is_active = isActive;
     
     updateData.updated_at = new Date().toISOString();
+
+    if (isActive && status !== undefined) {
+      const { error: authError } = await supabase.auth.admin.updateUserById(id, { ban_duration: 'none' });
+      if (authError) throw authError;
+    }
 
     const { data: updatedUser, error } = await supabase
       .from('admins')
@@ -177,6 +204,11 @@ export const updateAdminUser = async (req, res) => {
       .single();
 
     if (error) throw error;
+
+    if (!isActive && status !== undefined) {
+      const { error: authError } = await supabase.auth.admin.updateUserById(id, { ban_duration: '876000h' });
+      if (authError) throw authError;
+    }
 
     res.status(200).json({
       success: true,
@@ -217,10 +249,7 @@ export const deleteAdminUser = async (req, res) => {
       return res.status(400).json({ message: 'Cannot delete the Registrar account' });
     }
 
-    const { error } = await supabase
-      .from('admins')
-      .delete()
-      .eq('id', id);
+    const { error } = await supabase.auth.admin.deleteUser(id);
 
     if (error) throw error;
 
@@ -240,42 +269,22 @@ export const deleteAdminUser = async (req, res) => {
 export const resetAdminPassword = async (req, res) => {
   try {
     const { id } = req.params;
-    const { email, name } = req.body;
-
-    const tempPassword = generateTempPassword();
-    const password_hash = await hashPassword(tempPassword);
-
-    const { error } = await supabase
+    const { data: admin, error: lookupError } = await supabase
       .from('admins')
-      .update({
-        password_hash,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', id);
+      .select('email')
+      .eq('id', id)
+      .maybeSingle();
 
+    if (lookupError || !admin) return res.status(404).json({ message: 'Admin user not found' });
+
+    const { error } = await supabase.auth.resetPasswordForEmail(admin.email, {
+      redirectTo: `${adminAppUrl}/login?flow=recovery`
+    });
     if (error) throw error;
-
-    const subject = 'Password Reset - TRAC Request Admin';
-    const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; background: #f1f8e9; padding: 24px; border: 1px solid #c8e6c9; border-radius: 12px;">
-        ${renderEmailHeader()}
-        <h2 style="color: #1B5E20;">Password Reset</h2>
-        <p>Dear ${name},</p>
-        <p>Your password has been reset. Use the following temporary password to login:</p>
-        <div style="background: #fff; padding: 15px; border-left: 4px solid #F9A825; border-radius: 8px; margin: 15px 0;">
-          <p><strong>Temporary Password:</strong> ${tempPassword}</p>
-        </div>
-        <p>Please change your password after logging in.</p>
-        <p style="color: #1B5E20; font-weight: bold;">Use the TRAC Request Admin Login page to continue.</p>
-        <a href="${adminAppUrl}/login" style="display: inline-block; background: #1B5E20; color: white; padding: 10px 20px; text-decoration: none; border-radius: 8px;">Go to Admin Login</a>
-      </div>
-    `;
-    
-    await sendEmail(email, subject, html).catch(err => console.log('Email error:', err));
 
     res.status(200).json({
       success: true,
-      message: 'Password reset email sent successfully'
+      message: 'Password recovery email sent successfully'
     });
   } catch (err) {
     console.error('Error resetting password:', err);

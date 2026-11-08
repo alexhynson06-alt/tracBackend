@@ -1,16 +1,76 @@
 import jwt from 'jsonwebtoken';
 
-export const authenticateToken = (req, res, next) => {
+const supabaseIssuer = `${process.env.SUPABASE_URL?.replace(/\/$/, '')}/auth/v1`;
+
+const attachAdminProfile = async (req, res, userId) => {
+  const { supabase } = await import('../config/supabase.js');
+  const { data: admin, error } = await supabase
+    .from('admins')
+    .select('id, username, email, full_name, role, department, is_active')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Admin profile lookup failed:', error.message);
+    res.status(500).json({ message: 'Unable to verify admin access' });
+    return false;
+  }
+
+  if (!admin || !admin.is_active) {
+    res.status(403).json({ message: 'Admin account is inactive or not authorized' });
+    return false;
+  }
+
+  req.user = {
+    userId: admin.id,
+    role: admin.role,
+    department: admin.department,
+    type: 'admin',
+    username: admin.username,
+    email: admin.email,
+    name: admin.full_name
+  };
+  return true;
+};
+
+export const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   
   if (!token) return res.status(401).json({ message: 'No token provided' });
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+  const tokenClaims = jwt.decode(token);
+
+  if (tokenClaims?.iss === supabaseIssuer) {
+    try {
+      const { supabase } = await import('../config/supabase.js');
+      const { data, error } = await supabase.auth.getUser(token);
+      if (error || !data.user) {
+        return res.status(403).json({ message: 'Invalid token' });
+      }
+
+      if (!(await attachAdminProfile(req, res, data.user.id))) return;
+      return next();
+    } catch (error) {
+      console.error('Supabase admin token validation failed:', error.message);
+      return res.status(403).json({ message: 'Invalid token' });
+    }
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, async (err, decoded) => {
     if (err) return res.status(403).json({ message: 'Invalid token' });
-    
-    // decoded contains { userId, role, type? }
-    req.user = decoded;
+
+    if (decoded.type === 'admin' || decoded.role?.toLowerCase().includes('admin')) {
+      try {
+        if (!(await attachAdminProfile(req, res, decoded.userId))) return;
+      } catch (error) {
+        console.error('Admin profile verification failed:', error.message);
+        return res.status(500).json({ message: 'Unable to verify admin access' });
+      }
+    } else {
+      req.user = decoded;
+    }
+
     next();
   });
 };

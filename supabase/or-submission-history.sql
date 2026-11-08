@@ -116,7 +116,6 @@ begin
       status_history = coalesce(status_history, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
         'status', 'or_submitted',
         'timestamp', p_submitted_at,
-        'admin_id', p_user_id,
         'previous_status', current_request.status,
         'reason', null
       ))

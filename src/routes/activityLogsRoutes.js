@@ -1,5 +1,5 @@
 import express from 'express';
-import { authenticateToken as auth, requireAdmin } from '../middleware/auth.js';
+import { authenticateToken as auth, requireAdmin } from '../middleware/auth.middleware.js';
 import { getActivityLogs, getActivityLogById } from '../controllers/activityLogsController.js';
 
 const router = express.Router();

@@ -6,7 +6,7 @@
   "main": "src/server.js",
   "scripts": {
     "dev": "nodemon src/server.js",
-    "test": "node --test test/emailVerification.test.js"
+    "test": "node --test test/*.test.js"
   },
   "keywords": [],
   "author": "",

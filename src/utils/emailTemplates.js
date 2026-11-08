@@ -21,8 +21,7 @@ export const getApprovedTemplate = (data) => {
     trackingCode,
     documentType,
     dateSubmitted,
-    amount,
-    estimatedCompletion
+    amount
   } = data;
 
   const subject = `✅ Request Approved - Upload OR - ${trackingCode}`;
@@ -58,10 +57,6 @@ export const getApprovedTemplate = (data) => {
             <td style="padding: 8px 0; color: #666;">Amount to Pay:</td>
             <td style="padding: 8px 0; font-weight: bold; color: #1B5E20;">${amount === 'Not recorded' ? amount : `₱${amount}`}</td>
           </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #666;">Est. Completion:</td>
-            <td style="padding: 8px 0;">${formatDate(estimatedCompletion)}</td>
-          </tr>
         </table>
       </div>
       
@@ -90,8 +85,7 @@ export const getReadyTemplate = (data) => {
     studentName,
     trackingCode,
     documentType,
-    amount,
-    estimatedCompletion
+    amount
   } = data;
 
   const subject = `📦 Document Ready for Pickup - ${trackingCode}`;

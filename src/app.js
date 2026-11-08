@@ -11,6 +11,7 @@ import dashboardRoutes from './routes/dashboardRoutes.js';
 import adminUsersRoutes from './routes/adminUsersRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import queueRoutes from './routes/queue.routes.js';
+import adminNotificationsRoutes from './routes/adminNotificationsRoutes.js';
 
 // 🆕 PUBLIC SETTINGS — No authentication required
 import { getPublicSettings } from './controllers/settingsController.js';
@@ -41,6 +42,7 @@ app.use('/api/queue', queueRoutes);
 
 // Routes na walang conflict
 app.use('/api/test', testRoutes);
+app.use('/api/admin/notifications', adminNotificationsRoutes); // /api/admin/notifications
 app.use('/api/admin', adminAuthRoutes);      // /api/admin/auth
 app.use('/api/requests', requestRoutes);     // /api/requests/*
 app.use('/api/auth', authRoutes);            // /api/auth/*

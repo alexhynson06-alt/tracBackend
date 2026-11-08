@@ -1,6 +1,5 @@
 import { supabase } from '../config/supabase.js';
 import storageService from '../services/cloudinaryService.js';
-import { isRequestNextInLine } from './updateStatusController.js';
 
 const getRequestByIdentifier = async (identifier) => {
   const byTrackingCode = await supabase
@@ -26,6 +25,41 @@ const sendOrEmail = async (request, event, reason = null) => {
     await sendOrEmailNotification(request, event, reason);
   } catch (error) {
     console.error(`OR ${event} email error:`, error);
+  }
+};
+
+const notifyAdminsOfOrUpload = async (request, uploadedAt) => {
+  try {
+    const { data: admins, error: adminsError } = await supabase
+      .from('admins')
+      .select('id')
+      .eq('is_active', true);
+
+    if (adminsError) throw adminsError;
+
+    if (!admins?.length) return;
+
+    const notificationKey = `or-upload:${request.id}:${request.or_uploaded_at || uploadedAt}`;
+    const payload = admins.map((admin) => ({
+      admin_id: admin.id,
+      request_id: request.id,
+      type: 'or_uploaded',
+      title: 'Payment receipt uploaded',
+      message: `${request.sender_name || 'A student'} uploaded a payment receipt for ${request.tracking_code} (Queue #${request.queue_number || 'unassigned'}${request.queue_date ? `, ${request.queue_date}` : ''}).`,
+      link: `/admin/requests/${request.tracking_code}`,
+      event_key: notificationKey,
+      created_at: uploadedAt,
+      is_read: false
+    }));
+
+    const { error: insertError } = await supabase.from('admin_notifications').upsert(payload, {
+      onConflict: 'admin_id,event_key'
+    });
+    if (insertError) {
+      console.warn('Admin notifications table is unavailable or incompatible:', insertError.message);
+    }
+  } catch (error) {
+    console.error('Notify admins of OR upload error:', error);
   }
 };
 
@@ -76,6 +110,7 @@ export const uploadOfficialReceipt = async (req, res) => {
     }
 
     await sendOrEmail(updatedRequest, 'submitted');
+    await notifyAdminsOfOrUpload(updatedRequest, now);
     return res.status(200).json({
       success: true,
       message: 'Official receipt submitted for review.',
@@ -90,6 +125,62 @@ export const uploadOfficialReceipt = async (req, res) => {
   } catch (error) {
     console.error('Upload official receipt error:', error);
     return res.status(500).json({ message: error.message || 'Failed to upload official receipt.' });
+  }
+};
+
+export const getOfficialReceiptTimeline = async (req, res) => {
+  try {
+    const request = await getRequestByIdentifier(req.params.id);
+    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+
+    if (!request || (!isAdmin && request.sender_id !== req.user.userId)) {
+      return res.status(404).json({ message: 'Request not found' });
+    }
+
+    const { data: submissions, error } = await supabase
+      .from('request_or_submissions')
+      .select('id, attempt_number, or_number, submitted_at, submitted_by, reviewed_at, reviewed_by, decision, rejection_reason')
+      .eq('request_id', request.id)
+      .order('attempt_number', { ascending: true });
+
+    if (error) throw error;
+
+    const adminIds = new Set();
+    (submissions || []).forEach((entry) => {
+      if (entry.submitted_by) adminIds.add(entry.submitted_by);
+      if (entry.reviewed_by) adminIds.add(entry.reviewed_by);
+    });
+
+    const { data: admins } = adminIds.size
+      ? await supabase.from('admins').select('id, username, full_name').in('id', Array.from(adminIds))
+      : { data: [] };
+    const adminMap = Object.fromEntries((admins || []).map((admin) => [admin.id, admin]));
+
+    const timeline = (submissions || []).flatMap((entry) => ([
+      {
+        type: 'or_submitted',
+        attempt_number: entry.attempt_number,
+        or_number: entry.or_number,
+        timestamp: entry.submitted_at,
+        administrator: formatAdminDisplayName(adminMap[entry.submitted_by]),
+        decision: null,
+        reason: null
+      },
+      entry.reviewed_at ? {
+        type: entry.decision === 'confirmed' ? 'or_confirmed' : 'or_rejected',
+        attempt_number: entry.attempt_number,
+        or_number: entry.or_number,
+        timestamp: entry.reviewed_at,
+        administrator: formatAdminDisplayName(adminMap[entry.reviewed_by]),
+        decision: entry.decision,
+        reason: entry.rejection_reason || null
+      } : null
+    ].filter(Boolean)));
+
+    return res.status(200).json({ submissions: timeline });
+  } catch (error) {
+    console.error('Get official receipt timeline error:', error);
+    return res.status(500).json({ message: 'Failed to load official receipt history.' });
   }
 };
 
@@ -144,30 +235,6 @@ const reviewOfficialReceipt = async (req, res, action) => {
   if (!request) return { error: { status: 404, message: 'Request not found' } };
   if (request.status !== 'or_submitted') {
     return { error: { status: 400, message: 'This request has no official receipt waiting for review.' } };
-  }
-
-  if (action === 'confirm') {
-    const isNext = await isRequestNextInLine(request.id, request);
-    if (!isNext) {
-      const { data: nextRequest } = await supabase
-        .from('requests')
-        .select('queue_number, queue_date')
-        .in('status', ['pending', 'approved', 'or_submitted', 'or_rejected', 'or_confirmed', 'processing'])
-        .order('queue_date', { ascending: true })
-        .order('queue_number', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-
-      return {
-        error: {
-          status: 409,
-          message: `FIFO order required. Complete Queue #${nextRequest?.queue_number || 'the earlier request'} first.`,
-          fifoViolation: true,
-          currentQueue: request.queue_number,
-          nextQueue: nextRequest?.queue_number || null
-        }
-      };
-    }
   }
 
   const reason = req.body.reason?.trim() || null;

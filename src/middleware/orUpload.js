@@ -1,4 +1,5 @@
 import multer from 'multer';
+import { matchesImageSignature } from '../utils/imageSignature.js';
 
 const allowedMimeTypes = new Set([
   'image/jpeg',
@@ -20,7 +21,12 @@ export const orUpload = multer({
 
 export const orUploadSingle = (req, res, next) => {
   orUpload.single('or_image')(req, res, (error) => {
-    if (!error) return next();
+    if (!error) {
+      if (req.file && !matchesImageSignature(req.file.buffer, req.file.mimetype)) {
+        return res.status(400).json({ message: 'The uploaded file content does not match a supported image format.' });
+      }
+      return next();
+    }
 
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({ message: 'Official receipt images must be 5 MB or smaller.' });
