@@ -18,9 +18,10 @@ Then run these feature SQL files in order:
 2. `request-catalog-authority.sql` for fee snapshots, catalog request submission, request guard, and daily request indexes.
 3. `or-fifo-migration.sql` for official-receipt request fields/status support. The baseline already has the runtime `or_number` column.
 4. `or-submission-history.sql` for OR history and atomic upload/review RPCs.
-5. `admin-notifications.sql` for the Admin notification table.
+5. `or-submission-attribution.sql` for safe uploader/reviewer foreign keys on an existing OR history table. It is idempotent and safe after the fresh history migration too.
+6. `admin-notifications.sql` for the Admin notification table.
 
-The baseline already includes avatar columns and activity-calendar settings, so do **not** run `profile-avatar.sql` or `academic-calendar-settings.sql` on top of it. Do not run `academic-catalog.sql` because its empty-catalog update is unnecessary; the baseline has the app defaults. `trac-contact-email.sql` is an old-data update and is not needed. `remove-processing-days.sql` is redundant because the baseline fields are already nullable. Do not run rollback scripts or the legacy-signup cleanup against the empty project.
+The baseline already includes avatar columns and activity-calendar settings, so do **not** run `profile-avatar.sql` or `academic-calendar-settings.sql` on top of it. Do not run `academic-catalog.sql` because its empty-catalog update is unnecessary; the baseline has the app defaults. These optional schema-changing migrations now reload the PostgREST schema cache when used on other databases. `trac-contact-email.sql` is an old-data update and is not needed. `remove-processing-days.sql` is redundant because the baseline fields are already nullable. Do not run rollback scripts or the legacy-signup cleanup against the empty project.
 
 Before deploying the backend, inspect the SQL Editor results and confirm the tables, RPCs, constraints, indexes, RLS status, and grants exist. The SQL files are source artifacts, not a substitute for a staged execution and review.
 
@@ -43,8 +44,29 @@ order by status;
 3. If `submit_catalog_request` is missing, apply `request-catalog-authority.sql` after confirming the baseline tables exist.
 4. Apply `or-fifo-migration.sql` first; it adds receipt columns/status support required by the OR history migration.
 5. Apply `or-submission-history.sql`; it creates `request_or_submissions` and both `submit_request_or` and `review_request_or`. Its backfill preserves existing latest receipt data as attempt 1 and is repeat-safe for rows already backfilled.
-6. Apply `admin-notifications.sql` if the in-app Admin notification on OR upload is enabled. It is idempotent and now explicitly grants the backend service role the needed table access.
-7. Verify the objects before retrying the workflow:
+6. Apply `or-submission-attribution.sql`. It adds uploader-to-`users` and reviewer-to-`admins` foreign keys as `NOT VALID`, preserving legacy rows while enforcing new writes. Check legacy rows before validating:
+
+```sql
+select count(*) as orphaned_submitters
+from public.request_or_submissions as submission
+left join public.users as app_user on app_user.id = submission.submitted_by
+where submission.submitted_by is not null and app_user.id is null;
+
+select count(*) as orphaned_reviewers
+from public.request_or_submissions as submission
+left join public.admins as admin_profile on admin_profile.id = submission.reviewed_by
+where submission.reviewed_by is not null and admin_profile.id is null;
+```
+
+If both counts are zero, validate the constraints:
+
+```sql
+alter table public.request_or_submissions validate constraint request_or_submissions_submitted_by_fkey;
+alter table public.request_or_submissions validate constraint request_or_submissions_reviewed_by_fkey;
+```
+
+7. Apply `admin-notifications.sql` if the in-app Admin notification on OR upload is enabled. It is idempotent and grants the backend service role the needed table access.
+8. Verify the objects before retrying the workflow:
 
 ```sql
 select
@@ -62,6 +84,8 @@ order by p.proname;
 The expected OR functions have these signatures: `submit_request_or(uuid, uuid, text, text, text, timestamptz)` and `review_request_or(uuid, text, text, uuid, text, text, timestamptz)`. Then retry an OR upload and review using a test request.
 
 The backend uploads the receipt image before calling `submit_request_or`, but deletes that uploaded object if the database RPC fails. The reported failure path should therefore clean up the failed attempt's R2 object.
+
+The Admin/Alumni audit corrected OR timeline attribution: submitters are resolved from `public.users` (students and alumni) and reviewers from `public.admins`. The OR timeline authorization also recognizes the `type: admin` claim used for staff profiles as well as admin role names.
 
 These SQL files now send `NOTIFY pgrst, 'reload schema'` after adding tables/functions so PostgREST refreshes its schema cache. If PostgREST still reports a stale schema immediately after a successful migration, run `NOTIFY pgrst, 'reload schema';` in the SQL Editor and retry.
 

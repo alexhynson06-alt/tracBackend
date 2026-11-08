@@ -9,9 +9,9 @@ create table if not exists public.request_or_submissions (
   image_url text not null,
   image_public_id text not null,
   submitted_at timestamptz not null default now(),
-  submitted_by uuid,
+  submitted_by uuid references public.users(id) on delete set null,
   reviewed_at timestamptz,
-  reviewed_by uuid,
+  reviewed_by uuid references public.admins(id) on delete set null,
   decision text check (decision in ('confirmed', 'rejected')),
   rejection_reason text,
   constraint request_or_submissions_attempt_unique unique (request_id, attempt_number),
@@ -56,7 +56,7 @@ where request.or_image_url is not null
 on conflict (request_id, attempt_number) do nothing;
 
 alter table public.request_or_submissions enable row level security;
-revoke all on public.request_or_submissions from anon, authenticated;
+revoke all on public.request_or_submissions from public, anon, authenticated;
 grant select, insert, update, delete on public.request_or_submissions to service_role;
 
 drop function if exists public.submit_request_or(uuid, uuid, text, text, text, timestamptz);

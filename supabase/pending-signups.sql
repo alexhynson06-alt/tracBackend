@@ -23,7 +23,7 @@ create index if not exists pending_signups_created_at_idx
   on public.pending_signups (created_at);
 
 alter table public.pending_signups enable row level security;
-revoke all on public.pending_signups from anon, authenticated;
+revoke all on public.pending_signups from public, anon, authenticated;
 grant all on public.pending_signups to service_role;
 
 create or replace function public.resend_pending_signup(

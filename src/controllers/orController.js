@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js';
 import storageService from '../services/cloudinaryService.js';
+import { buildOrSubmissionTimeline } from '../utils/orSubmissionTimeline.js';
 
 const getRequestByIdentifier = async (identifier) => {
   const byTrackingCode = await supabase
@@ -131,7 +132,7 @@ export const uploadOfficialReceipt = async (req, res) => {
 export const getOfficialReceiptTimeline = async (req, res) => {
   try {
     const request = await getRequestByIdentifier(req.params.id);
-    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const isAdmin = req.user.type === 'admin' || req.user.role?.toLowerCase().includes('admin');
 
     if (!request || (!isAdmin && request.sender_id !== req.user.userId)) {
       return res.status(404).json({ message: 'Request not found' });
@@ -145,37 +146,22 @@ export const getOfficialReceiptTimeline = async (req, res) => {
 
     if (error) throw error;
 
-    const adminIds = new Set();
-    (submissions || []).forEach((entry) => {
-      if (entry.submitted_by) adminIds.add(entry.submitted_by);
-      if (entry.reviewed_by) adminIds.add(entry.reviewed_by);
-    });
+    const submitterIds = [...new Set((submissions || []).map((entry) => entry.submitted_by).filter(Boolean))];
+    const reviewerIds = [...new Set((submissions || []).map((entry) => entry.reviewed_by).filter(Boolean))];
 
-    const { data: admins } = adminIds.size
-      ? await supabase.from('admins').select('id, username, full_name').in('id', Array.from(adminIds))
-      : { data: [] };
-    const adminMap = Object.fromEntries((admins || []).map((admin) => [admin.id, admin]));
+    const [{ data: users, error: usersError }, { data: admins, error: adminsError }] = await Promise.all([
+      submitterIds.length
+        ? supabase.from('users').select('id, first_name, last_name, id_number').in('id', submitterIds)
+        : Promise.resolve({ data: [], error: null }),
+      reviewerIds.length
+        ? supabase.from('admins').select('id, username, full_name').in('id', reviewerIds)
+        : Promise.resolve({ data: [], error: null })
+    ]);
 
-    const timeline = (submissions || []).flatMap((entry) => ([
-      {
-        type: 'or_submitted',
-        attempt_number: entry.attempt_number,
-        or_number: entry.or_number,
-        timestamp: entry.submitted_at,
-        administrator: formatAdminDisplayName(adminMap[entry.submitted_by]),
-        decision: null,
-        reason: null
-      },
-      entry.reviewed_at ? {
-        type: entry.decision === 'confirmed' ? 'or_confirmed' : 'or_rejected',
-        attempt_number: entry.attempt_number,
-        or_number: entry.or_number,
-        timestamp: entry.reviewed_at,
-        administrator: formatAdminDisplayName(adminMap[entry.reviewed_by]),
-        decision: entry.decision,
-        reason: entry.rejection_reason || null
-      } : null
-    ].filter(Boolean)));
+    if (usersError) throw usersError;
+    if (adminsError) throw adminsError;
+
+    const timeline = buildOrSubmissionTimeline(submissions || [], users || [], admins || []);
 
     return res.status(200).json({ submissions: timeline });
   } catch (error) {
@@ -187,7 +173,7 @@ export const getOfficialReceiptTimeline = async (req, res) => {
 export const getOfficialReceipt = async (req, res) => {
   try {
     const request = await getRequestByIdentifier(req.params.id);
-    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const isAdmin = req.user.type === 'admin' || req.user.role?.toLowerCase().includes('admin');
 
     if (!request || (!isAdmin && request.sender_id !== req.user.userId)) {
       return res.status(404).json({ message: 'Request not found' });

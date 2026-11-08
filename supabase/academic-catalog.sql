@@ -13,3 +13,5 @@ set academic_settings = '[
   {"code":"GS","name":"Graduate Studies","shortName":"GS","programs":[{"code":"MAEd","name":"Master of Arts in Education","abbr":"MAEd"},{"code":"MSA","name":"Master of Science in Agriculture","abbr":"MSA"},{"code":"MSAgEd","name":"Master of Science in Agricultural Education","abbr":"MSAgEd"},{"code":"MSAg.Mgt.","name":"Master of Science in Agricultural Management","abbr":"MSAg.Mgt."}]}
 ]'::jsonb
 where academic_settings is null or academic_settings = '[]'::jsonb;
+
+notify pgrst, 'reload schema';

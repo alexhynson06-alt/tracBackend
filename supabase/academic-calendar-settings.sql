@@ -14,3 +14,5 @@ alter table public.system_settings
 
 comment on column public.system_settings.activity_calendar is
   'Admin-managed school-year start and semester month ranges used by Activity Logs.';
+
+notify pgrst, 'reload schema';
