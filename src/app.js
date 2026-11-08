@@ -18,14 +18,17 @@ import { getPublicSettings } from './controllers/settingsController.js';
 
 const app = express();
 
-const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000,http://localhost:3002,http://localhost:5000')
-	.split(',')
-	.map((origin) => origin.trim())
-	.filter(Boolean);
+const configuredOrigins = process.env.CORS_ORIGINS
+	? process.env.CORS_ORIGINS.split(',')
+	: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:3002', 'http://localhost:5000'];
+const allowedOrigins = new Set([
+	...configuredOrigins,
+	'https://trac-student.vercel.app'
+].map((origin) => origin.trim().replace(/\/+$/, '')).filter(Boolean));
 
 app.use(cors({
 	origin: (origin, callback) => {
-		if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+		if (!origin || allowedOrigins.has(origin.trim().replace(/\/+$/, ''))) return callback(null, true);
 		return callback(new Error('Origin is not allowed by CORS'));
 	},
 	methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
