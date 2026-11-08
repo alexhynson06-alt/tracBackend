@@ -213,3 +213,5 @@ $$;
 
 revoke all on function public.review_request_or(uuid, text, text, uuid, text, text, timestamptz) from public, anon, authenticated;
 grant execute on function public.review_request_or(uuid, text, text, uuid, text, text, timestamptz) to service_role;
+
+notify pgrst, 'reload schema';

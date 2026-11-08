@@ -172,3 +172,5 @@ create index if not exists requests_global_daily_limit_idx
 
 create index if not exists requests_user_daily_limit_idx
   on public.requests (sender_id, queue_date);
+
+notify pgrst, 'reload schema';

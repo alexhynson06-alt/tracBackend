@@ -24,6 +24,49 @@ The baseline already includes avatar columns and activity-calendar settings, so 
 
 Before deploying the backend, inspect the SQL Editor results and confirm the tables, RPCs, constraints, indexes, RLS status, and grants exist. The SQL files are source artifacts, not a substitute for a staged execution and review.
 
+### Repair an Existing Deployment Missing Request or OR SQL
+
+The errors `Could not find function public.submit_catalog_request(p_request)` and `Could not find table public.request_or_submissions` / `function public.submit_request_or(...)` mean the corresponding SQL migration was not applied to the Supabase project currently configured in Render. These are database migrations; a backend redeploy alone cannot create them.
+
+For an existing project with requests already in it:
+
+1. Confirm this is the same Supabase project URL configured for the running Render service. Back up or export `public.requests` before running the OR migrations.
+2. Check request statuses first. The FIFO migration installs a status check constraint and expects only these values: `pending`, `approved`, `or_submitted`, `or_rejected`, `or_confirmed`, `processing`, `ready`, `claimed`, `rejected`.
+
+```sql
+select status, count(*)
+from public.requests
+group by status
+order by status;
+```
+
+3. If `submit_catalog_request` is missing, apply `request-catalog-authority.sql` after confirming the baseline tables exist.
+4. Apply `or-fifo-migration.sql` first; it adds receipt columns/status support required by the OR history migration.
+5. Apply `or-submission-history.sql`; it creates `request_or_submissions` and both `submit_request_or` and `review_request_or`. Its backfill preserves existing latest receipt data as attempt 1 and is repeat-safe for rows already backfilled.
+6. Apply `admin-notifications.sql` if the in-app Admin notification on OR upload is enabled. It is idempotent and now explicitly grants the backend service role the needed table access.
+7. Verify the objects before retrying the workflow:
+
+```sql
+select
+  to_regclass('public.request_or_submissions') as request_or_submissions,
+  to_regclass('public.admin_notifications') as admin_notifications;
+
+select p.proname, pg_get_function_identity_arguments(p.oid) as arguments
+from pg_proc as p
+join pg_namespace as n on n.oid = p.pronamespace
+where n.nspname = 'public'
+  and p.proname in ('submit_catalog_request', 'submit_request_or', 'review_request_or')
+order by p.proname;
+```
+
+The expected OR functions have these signatures: `submit_request_or(uuid, uuid, text, text, text, timestamptz)` and `review_request_or(uuid, text, text, uuid, text, text, timestamptz)`. Then retry an OR upload and review using a test request.
+
+The backend uploads the receipt image before calling `submit_request_or`, but deletes that uploaded object if the database RPC fails. The reported failure path should therefore clean up the failed attempt's R2 object.
+
+These SQL files now send `NOTIFY pgrst, 'reload schema'` after adding tables/functions so PostgREST refreshes its schema cache. If PostgREST still reports a stale schema immediately after a successful migration, run `NOTIFY pgrst, 'reload schema';` in the SQL Editor and retry.
+
+The production logs show existing request rows, so do not rerun `fresh-project-schema.sql` on that database. It is only for a new empty project.
+
 ## 3. Create the First SuperAdmin
 
 1. In Supabase Dashboard > Authentication > Users, create/invite the first Admin account using a new email/password. Ensure the email is confirmed before login if the project requires confirmation.

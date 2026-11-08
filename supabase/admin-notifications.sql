@@ -24,3 +24,6 @@ create index if not exists admin_notifications_admin_unread_idx
 
 alter table public.admin_notifications enable row level security;
 revoke all on public.admin_notifications from public, anon, authenticated;
+grant select, insert, update, delete on public.admin_notifications to service_role;
+
+notify pgrst, 'reload schema';

@@ -39,3 +39,5 @@ create index if not exists requests_or_review_idx
 comment on column public.requests.or_image_url is 'Public R2 URL for the uploaded official receipt image';
 comment on column public.requests.or_image_public_id is 'R2 object key used to replace or delete the receipt image';
 comment on column public.requests.or_rejection_reason is 'Admin reason when an uploaded official receipt needs correction';
+
+notify pgrst, 'reload schema';

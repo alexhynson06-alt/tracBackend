@@ -205,3 +205,5 @@ revoke all on function public.resend_pending_signup(text, text) from public, ano
 revoke all on function public.verify_and_promote_pending_signup(text, text) from public, anon, authenticated;
 grant execute on function public.resend_pending_signup(text, text) to service_role;
 grant execute on function public.verify_and_promote_pending_signup(text, text) to service_role;
+
+notify pgrst, 'reload schema';
