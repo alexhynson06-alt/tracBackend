@@ -20,6 +20,7 @@ Then run these feature SQL files in order:
 4. `or-submission-history.sql` for OR history and atomic upload/review RPCs.
 5. `or-submission-attribution.sql` for safe uploader/reviewer foreign keys on an existing OR history table. It is idempotent and safe after the fresh history migration too.
 6. `admin-notifications.sql` for the Admin notification table.
+7. `or-submission-admin-notifications.sql` to atomically create one persistent notification per active admin when an OR submission succeeds.
 
 The baseline already includes avatar columns and activity-calendar settings, so do **not** run `profile-avatar.sql` or `academic-calendar-settings.sql` on top of it. Do not run `academic-catalog.sql` because its empty-catalog update is unnecessary; the baseline has the app defaults. These optional schema-changing migrations now reload the PostgREST schema cache when used on other databases. `trac-contact-email.sql` is an old-data update and is not needed. `remove-processing-days.sql` is redundant because the baseline fields are already nullable. Do not run rollback scripts or the legacy-signup cleanup against the empty project.
 
@@ -65,8 +66,9 @@ alter table public.request_or_submissions validate constraint request_or_submiss
 alter table public.request_or_submissions validate constraint request_or_submissions_reviewed_by_fkey;
 ```
 
-7. Apply `admin-notifications.sql` if the in-app Admin notification on OR upload is enabled. It is idempotent and grants the backend service role the needed table access.
-8. Verify the objects before retrying the workflow:
+7. Apply `admin-notifications.sql` if it is not already present. It is idempotent and grants the backend service role the needed table access.
+8. Apply `or-submission-admin-notifications.sql` to make notification creation part of the accepted OR submission transaction. A backend redeploy alone does not install this database function update.
+9. Verify the objects before retrying the workflow:
 
 ```sql
 select

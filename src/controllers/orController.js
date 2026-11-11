@@ -29,41 +29,6 @@ const sendOrEmail = async (request, event, reason = null) => {
   }
 };
 
-const notifyAdminsOfOrUpload = async (request, uploadedAt) => {
-  try {
-    const { data: admins, error: adminsError } = await supabase
-      .from('admins')
-      .select('id')
-      .eq('is_active', true);
-
-    if (adminsError) throw adminsError;
-
-    if (!admins?.length) return;
-
-    const notificationKey = `or-upload:${request.id}:${request.or_uploaded_at || uploadedAt}`;
-    const payload = admins.map((admin) => ({
-      admin_id: admin.id,
-      request_id: request.id,
-      type: 'or_uploaded',
-      title: 'Payment receipt uploaded',
-      message: `${request.sender_name || 'A student'} uploaded a payment receipt for ${request.tracking_code} (Queue #${request.queue_number || 'unassigned'}${request.queue_date ? `, ${request.queue_date}` : ''}).`,
-      link: `/admin/requests/${request.tracking_code}`,
-      event_key: notificationKey,
-      created_at: uploadedAt,
-      is_read: false
-    }));
-
-    const { error: insertError } = await supabase.from('admin_notifications').upsert(payload, {
-      onConflict: 'admin_id,event_key'
-    });
-    if (insertError) {
-      console.warn('Admin notifications table is unavailable or incompatible:', insertError.message);
-    }
-  } catch (error) {
-    console.error('Notify admins of OR upload error:', error);
-  }
-};
-
 export const uploadOfficialReceipt = async (req, res) => {
   try {
     const request = await getRequestByIdentifier(req.params.id);
@@ -111,7 +76,6 @@ export const uploadOfficialReceipt = async (req, res) => {
     }
 
     await sendOrEmail(updatedRequest, 'submitted');
-    await notifyAdminsOfOrUpload(updatedRequest, now);
     return res.status(200).json({
       success: true,
       message: 'Official receipt submitted for review.',
